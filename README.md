@@ -108,4 +108,4 @@ This allows for dynamic exploration beyond the static visualizations presented a
 
 ### Full Code
 
-The full R script used for data processing, modeling, and visualization is available [here](link-to-your-R-script).
+The full R script used for data processing, modeling, and visualization is available [here]([link-to-your-R-script](https://github.com/shsilv/Workforce_Analytics/blob/main/R%20Code)).
