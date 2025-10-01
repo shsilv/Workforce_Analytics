@@ -1,0 +1,129 @@
+# ==============================
+# Airline Delay Analysis (Jan-Jun 2025) 
+# ==============================
+
+# Load libraries
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(scales)
+
+# Upload Dataset
+flight_data <- read_csv("Airline_Delay_Cause_2025.csv")
+
+# Quick peek
+glimpse(flight_data)
+head(flight_data)
+colSums(is.na(flight_data))
+
+# Handle Missing Values
+flight_data <- flight_data %>%
+  mutate(across(c(arr_flights, arr_del15, arr_cancelled, arr_diverted,
+                  carrier_ct, weather_ct, nas_ct, security_ct, late_aircraft_ct),
+                ~replace_na(.x, 0)))
+
+# Define Carrier Types & Estimates
+mainline_carriers <- c("American Airlines Network","Delta Air Lines Network",
+                       "United Air Lines Network","Southwest Airlines",
+                       "Alaska Airlines Network","Hawaiian Airlines Network",
+                       "JetBlue Airways","Frontier Airlines","Allegiant Air","Spirit Airlines")
+
+flight_data <- flight_data %>%
+  mutate(carrier_type = if_else(carrier_name %in% mainline_carriers, "mainline", "regional"),
+         avg_passengers = if_else(carrier_type == "mainline", 180, 70),
+         estimated_passengers = arr_flights * avg_passengers,
+         impact_score = arr_delay * avg_passengers,
+         agent_capacity_minutes_per_hour = if_else(carrier_type == "mainline", 70, 50))
+
+# Summarize by Carrier
+carrier_summary <- flight_data %>%
+  group_by(carrier, carrier_name, carrier_type) %>%
+  summarise(total_flights = sum(arr_flights, na.rm = TRUE),
+            total_delays = sum(arr_del15, na.rm = TRUE),
+            total_delay_minutes = sum(arr_delay, na.rm = TRUE),
+            passengers_affected = sum(estimated_passengers, na.rm = TRUE),
+            total_impact_score = sum(impact_score, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(passengers_affected_spike = passengers_affected * 1.3)
+
+# Staffing assumptions
+shift_hours <- 8
+workdays <- 22
+
+# Calculate agents required per carrier
+carrier_summary <- carrier_summary %>%
+  mutate(agent_capacity_per_shift = agent_capacity_minutes_per_hour * shift_hours,
+         agents_required = ceiling(total_delay_minutes / (agent_capacity_per_shift * workdays)))
+
+# -----------------------------
+# Option A SLA: Fixed staffing per carrier type
+# -----------------------------
+carrier_summary <- carrier_summary %>%
+  mutate(fixed_agents = if_else(carrier_type == "mainline", 200, 50),  # fixed staffing
+         agent_capacity_total = fixed_agents * agent_capacity_per_shift * workdays,
+         sla_estimated = pmin(1, agent_capacity_total / total_delay_minutes))
+
+# Save CSV for Tableau
+write_csv(carrier_summary, "carrier_summary.csv")
+
+
+# Key Visualizations
+
+
+# Top 10 carriers by operational impact
+top10 <- carrier_summary %>% slice_max(total_impact_score, n = 10)
+
+ggplot(top10, aes(x = reorder(carrier_name, total_impact_score), y = total_impact_score, fill = carrier_type)) +
+  geom_col() + coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Top 10 Carriers by Operational Impact Score", x = "", y = "Impact Score", fill = "Carrier Type") +
+  theme_minimal()
+
+# Scatter plot: delay minutes vs passengers affected
+ggplot(carrier_summary, aes(x = total_delay_minutes, y = passengers_affected, color = carrier_type)) +
+  geom_point(size = 3) +
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Carrier Workload: Delay Minutes vs Passengers Affected",
+       x = "Total Delay Minutes", y = "Passengers Affected") +
+  theme_minimal()
+
+
+# Scenario Modeling (+30% Delays)
+carrier_summary_scenario <- carrier_summary %>%
+  mutate(total_delay_minutes_scenario = total_delay_minutes * 1.3,
+         passengers_affected_scenario = passengers_affected * 1.3,
+         impact_score_scenario = total_impact_score * 1.3,
+         agents_required_scenario = ceiling(total_delay_minutes_scenario / (agent_capacity_per_shift * workdays)),
+         sla_est_scenario = pmin(1, (fixed_agents * agent_capacity_per_shift * workdays) / total_delay_minutes_scenario))
+
+# Top 10 for scenario plotting
+top10_scenario <- carrier_summary_scenario %>% slice_max(total_impact_score, n = 10)
+
+
+# Plots: Staffing & SLA
+
+# Agents required by carrier
+ggplot(top10, aes(x = reorder(carrier_name, agents_required), y = agents_required, fill = carrier_type)) +
+  geom_col() + coord_flip() +
+  scale_y_continuous(labels = comma) +
+  labs(title = "Top 10 Carriers: Estimated Agents Required",
+       x = "", y = "Agents Required (per month)", fill = "Carrier Type") +
+  theme_minimal(base_size = 14)
+
+# Scenario plot: normal vs +30% delay
+ggplot(top10_scenario, aes(x = reorder(carrier_name, agents_required))) +
+  geom_col(aes(y = agents_required, fill = "Normal"), width = 0.4, position = position_nudge(x = -0.2)) +
+  geom_col(aes(y = agents_required_scenario, fill = "Scenario +30%"), width = 0.4, position = position_nudge(x = 0.2)) +
+  geom_point(aes(y = sla_est_scenario * max(agents_required_scenario), color = "SLA"), size = 3) +
+  coord_flip() +
+  scale_y_continuous(labels = comma,
+                     sec.axis = sec_axis(~./max(top10_scenario$agents_required_scenario), name = "Estimated SLA")) +
+  scale_fill_manual(values = c("Normal" = "#1f77b4", "Scenario +30%" = "#ff7f0e")) +
+  scale_color_manual(values = c("SLA" = "red")) +
+  labs(title = "Staffing Needs & SLA under Normal vs +30% Delay Scenario",
+       x = "Carrier", y = "Agents Required", fill = "Scenario", color = "") +
+  theme_minimal()
+
+library(knitr)
+knitr::spin("Airline_Staffing_Analysis.R", knit = FALSE)
